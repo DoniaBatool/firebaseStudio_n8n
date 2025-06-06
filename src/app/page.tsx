@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState } from "react";
@@ -56,56 +57,102 @@ export default function ExcuseGeneratorPage() {
     setGeneratedExcuse(null);
     setError(null);
 
+    let determinedExcuse: string | null = null;
+    let toastInfo: { title: string; description: string; variant?: "default" | "destructive" } | null = null;
+
     try {
+      // Step 1: Get AI excuse (as a fallback or initial version)
       const aiInput: GenerateExcuseInput = { context: values.context };
       const aiResponse = await generateExcuse(aiInput);
-
       if (aiResponse && aiResponse.excuse) {
-        setGeneratedExcuse(aiResponse.excuse);
-        toast({
-          title: "Excuse Generated!",
-          description: "Your custom excuse is ready.",
+        determinedExcuse = aiResponse.excuse;
+        // Initial toast if AI succeeds, might be overridden by webhook outcome
+        toastInfo = { 
+          title: "AI Excuse Generated!", 
+          description: "Your custom excuse is ready. Checking webhook for updates..." 
+        };
+      }
+
+      // Step 2: Try to get excuse from webhook
+      try {
+        const webhookResponse = await fetch('http://localhost:5678/webhook-test/a63df51a-7c0f-4221-bae9-1365f4693862', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ context: values.context }),
         });
 
-        // Make the POST request to the webhook
-        try {
-          const webhookResponse = await fetch('http://localhost:5678/webhook-test/a63df51a-7c0f-4221-bae9-1365f4693862', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ context: values.context }),
-          });
-
-          if (!webhookResponse.ok) {
-            console.error('Webhook POST request failed:', webhookResponse.statusText);
-            // Optionally notify user, though not strictly required by prompt
-             toast({
-              title: "Webhook Update",
-              description: `Context sent to webhook, but server responded with ${webhookResponse.status}.`,
-              variant: "default",
-            });
+        if (webhookResponse.ok) {
+          const webhookData = await webhookResponse.json();
+          if (webhookData && typeof webhookData.excuse === 'string' && webhookData.excuse.trim()) {
+            determinedExcuse = webhookData.excuse; // Webhook excuse takes precedence
+            toastInfo = {
+              title: "Excuse from Webhook!",
+              description: "Your custom excuse has been provided by the webhook.",
+            };
           } else {
-            toast({
-              title: "Webhook Update",
-              description: "Context successfully sent to webhook.",
-            });
+            // Webhook responded OK, but no valid excuse in data.
+            console.log('Webhook responded OK but no valid excuse. Using AI excuse if available.');
+            if (determinedExcuse) { // AI excuse exists
+              toastInfo = {
+                title: "Using AI Excuse",
+                description: "Webhook didn't provide an update. Sticking with the AI's suggestion.",
+              };
+            }
+            // If determinedExcuse is null here, AI also failed. Handled by final check.
           }
-        } catch (webhookError) {
-          console.error('Error sending POST request to webhook:', webhookError);
-           toast({
-            title: "Webhook Error",
-            description: "Could not send context to webhook. Check console.",
-            variant: "destructive",
-          });
+        } else {
+          // Webhook call failed (e.g., 404, 500).
+          console.error('Webhook POST request failed:', webhookResponse.statusText);
+          if (determinedExcuse) { // AI excuse exists
+            toastInfo = {
+              title: "Webhook Error",
+              description: `Webhook request failed (${webhookResponse.status}). Using AI's suggestion.`,
+              variant: "default",
+            };
+          }
+          // If determinedExcuse is null here, AI also failed. Handled by final check.
         }
-
-      } else {
-        setError("The AI couldn't come up with an excuse this time. Try rephrasing your context.");
+      } catch (webhookError) {
+        // Error sending POST request to webhook (e.g., network issue).
+        console.error('Error sending POST request to webhook:', webhookError);
+        if (determinedExcuse) { // AI excuse exists
+          toastInfo = {
+            title: "Webhook Connection Error",
+            description: "Could not connect to webhook. Using AI's suggestion.",
+            variant: "default",
+          };
+        }
+        // If determinedExcuse is null here, AI also failed. Handled by final check.
       }
-    } catch (e) {
+
+      // Step 3: Set final state and toast
+      if (determinedExcuse) {
+        setGeneratedExcuse(determinedExcuse);
+        // Ensure toastInfo is set if it fell through (e.g. AI success, webhook irrelevant/no-op path)
+        if (!toastInfo && determinedExcuse === (aiResponse && aiResponse.excuse) ) {
+             toastInfo = { title: "AI Excuse Generated!", description: "Your custom excuse is ready." };
+        }
+        if (toastInfo) {
+          toast(toastInfo);
+        }
+      } else {
+        // No excuse from AI or webhook
+        setError("We couldn't come up with an excuse this time. Try rephrasing your context.");
+        toast({
+            title: "No Excuse Found",
+            description: "Unable to generate an excuse from any source.",
+            variant: "destructive"
+        });
+      }
+
+    } catch (e) { // Outer catch for errors like AI model call failure or other unexpected issues
       console.error(e);
       setError("An unexpected error occurred while generating the excuse. Please try again.");
+       toast({
+        title: "System Error",
+        description: "An unexpected error occurred.",
+        variant: "destructive",
+      });
     } finally {
       setIsLoading(false);
     }
